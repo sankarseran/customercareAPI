@@ -13,6 +13,18 @@ services:
       test: pg_isready -U api -d api
       interval: 1s
       start_period: 5s
+
+  redis:
+    image: redis:alpine
+    ports:
+      - 6379:6379
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 1s
+      timeout: 3s
+      retries: 5
+
   migrate:
     build:
       context: .
@@ -22,6 +34,7 @@ services:
       - DATABASE_URL=postgres://api:apiPassword@db:5432/api
     depends_on:
       - db
+
   seed:
     build:
       context: .
@@ -34,6 +47,7 @@ services:
       PGDATABASE: &database
     depends_on:
       - db
+
   api:
     build:
       context: .
@@ -42,8 +56,11 @@ services:
       PGUSER: *db-user
       PGPASSWORD: *db-pwd
       PGDATABASE: *database
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
     ports:
       - 8000:8000
     depends_on:
       - db
       - migrate
+      - redis
