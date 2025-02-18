@@ -38,6 +38,7 @@ npm ci
 docker compose up -d db
 npm run migrate:up
 npm run seed
+docker compose up -d redis
 ```
 
 Execute `npm run serve` to run the API.

@@ -1,5 +1,4 @@
 import { api } from "./api";
-// import { whenProcessExit } from "./lib/process/when-process-exit";
 import fastify from "fastify";
 import { env } from "./lib/env";
 import { once } from "events";
@@ -41,6 +40,7 @@ import fastifySwaggerUi from "@fastify/swagger-ui";
     });
   try {
     await server.listen({ host: "0.0.0.0", port: 8000 });
+
     await Promise.race([once(process, "SIGINT"), once(process, "SIGTERM")]);
     server.log.info("Terminating...");
     await server.close();

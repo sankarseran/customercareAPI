@@ -1,71 +1,117 @@
 import { FastifyInstance } from "fastify";
-import { isTicketUnresolved } from "../queries/tickets.queries";
+import assert from "assert";
+import { getTicket, isTicketUnresolved } from "../queries/tickets.queries";
 import { addMessageToTicket } from "../queries/messages.queries";
 import {
+  getBulkSendJobById,
   incrementBulkSendJobError,
   incrementBulkSendJobProcessed,
   updateBulkSendJob,
-} from "../queries/bulkSendJobs.queries";
-import { addBulkSendFailure } from "../queries/bulkSendFailures.queries";
+} from "../queries/bulk_send_jobs.queries";
+import { addBulkSendFailure } from "../queries/bulk_send_failures.queries";
 
-export async function processBulkSendJob(
-  jobId: number,
-  instance: FastifyInstance
-) {
-  // Fetch the job details.
-  const job = await instance.db.bulkSendJobs.findById(jobId);
-  if (!job) return;
+interface TicketProcessingDeps {
+  isTicketUnresolved: typeof isTicketUnresolved;
+  addMessageToTicket: typeof addMessageToTicket;
+  getTicket: typeof getTicket;
+  incrementBulkSendJobError: typeof incrementBulkSendJobError;
+  incrementBulkSendJobProcessed: typeof incrementBulkSendJobProcessed;
+  addBulkSendFailure: typeof addBulkSendFailure;
+}
 
-  // Mark the job as running.
-  await instance.db.bulkSendJobs.update(jobId, {
-    status: "running",
-    startedAt: new Date(),
-  });
-
-  for (const ticketId of job.ticketIds) {
-    try {
-      // Check if the ticket is still unresolved.
-      const [{ ok }] = await isTicketUnresolved.run({ ticketId }, instance.db);
-      if (ok) {
-        // Add the message to the ticket.
-        await addMessageToTicket.run(
-          {
-            ticketId,
-            text: job.message,
-            senderType: job.senderType,
-            senderId: job.senderId,
-          },
-          instance.db
-        );
-      }
-    } catch (error) {
-      // Increment the error count.
-      await incrementBulkSendJobError.run({ jobId }, instance.db);
-
-      // Fetch the ticket details to get the customerId.
-      // (Assuming you have instance.db.tickets.findById or a similar query.)
-      const ticket = await instance.db.tickets.findById(ticketId);
-
-      // Insert a failure record with the ticketId and customerId.
-      await addBulkSendFailure.run(
+async function processTicket(
+  ticketId: number,
+  job: any,
+  db: any,
+  instance: FastifyInstance,
+  deps: TicketProcessingDeps
+): Promise<void> {
+  try {
+    const [{ ok }] = await deps.isTicketUnresolved.run({ ticketId }, db);
+    if (ok) {
+      await deps.addMessageToTicket.run(
         {
-          jobId,
+          ticketId,
+          text: job.message,
+          senderType: job.senderType,
+          senderId: job.senderId,
+        },
+        db
+      );
+    }
+  } catch (error) {
+    instance.log.error(
+      `Error processing ticket ${ticketId} for job ${job.jobId}: ${
+        error instanceof Error ? error.message : error
+      }`
+    );
+    await deps.incrementBulkSendJobError.run({ jobId: job.jobId }, db);
+    try {
+      const [ticket] = await deps.getTicket.run({ id: ticketId }, db);
+      await deps.addBulkSendFailure.run(
+        {
+          jobId: job.jobId,
           ticketId,
           customerId: ticket.customerId,
           errorMessage:
             error instanceof Error ? error.message : "Unknown error",
         },
-        instance.db
+        db
+      );
+    } catch (ticketError) {
+      instance.log.error(
+        `Error retrieving ticket ${ticketId} or logging failure: ${
+          ticketError instanceof Error ? ticketError.message : ticketError
+        }`
+      );
+      await deps.addBulkSendFailure.run(
+        {
+          jobId: job.jobId,
+          ticketId,
+          customerId: "Invalid customer ID",
+          errorMessage:
+            error instanceof Error ? error.message : "Unknown error",
+        },
+        db
       );
     }
+  }
+  await deps.incrementBulkSendJobProcessed.run({ jobId: job.jobId }, db);
+}
 
-    // Increment the processed count.
-    await incrementBulkSendJobProcessed.run({ jobId }, instance.db);
+export async function processBulkSendJob(
+  jobId: number,
+  instance: FastifyInstance
+) {
+  assert.ok(instance.db, "Missing DB connection");
+  const db = instance.db;
+
+  const [job] = await getBulkSendJobById.run({ jobId }, db);
+  if (!job) {
+    instance.log.warn(`No job found with id ${jobId}`);
+    return;
   }
 
-  // Mark the job as completed.
+  await updateBulkSendJob.run(
+    { jobId, status: "running", startedAt: new Date() },
+    db
+  );
+
+  const deps: TicketProcessingDeps = {
+    isTicketUnresolved,
+    addMessageToTicket,
+    getTicket,
+    incrementBulkSendJobError,
+    incrementBulkSendJobProcessed,
+    addBulkSendFailure,
+  };
+
+  for (const ticketId of job.ticketIds) {
+    await processTicket(ticketId, job, db, instance, deps);
+  }
+
   await updateBulkSendJob.run(
     { jobId, status: "completed", completedAt: new Date() },
-    instance.db
+    db
   );
 }

@@ -1,33 +1,41 @@
-// src/plugins/jobQueue.ts
+import { FastifyInstance, FastifyPluginCallback } from "fastify";
+import fp from "fastify-plugin";
+import Bull, { Queue } from "bull";
+import { processBulkSendJob } from "../../lib/processBulkSendJob";
 
-import { FastifyInstance, FastifyPluginCallback } from 'fastify';
-import Bull, { Queue } from 'bull';
-import { processBulkSendJob } from '../../lib/processBulkSendJob'; // Import your function
+declare module "fastify" {
+  interface FastifyInstance {
+    queue: Queue;
+  }
+}
 
-const queuePlugin: FastifyPluginCallback = (fastify, options, done) => {
-  // Create a new Bull queue for processing bulk send jobs.
-  const queue: Queue = new Bull('processBulkSend', {
+const queuePlugin: FastifyPluginCallback = (fastify, options) => {
+  const queue: Queue = new Bull("processBulkSend", {
     redis: {
       host: process.env.REDIS_HOST || '127.0.0.1',
       port: process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT) : 6379,
     },
   });
 
-  // Set up a processor for jobs of type "processBulkSend".
-  queue.process(async (job) => {
+  queue.process("processBulkSend", async (job) => {
     const { jobId } = job.data;
-    fastify.log.info(`Processing bulk send job ${jobId}`);
-    
-    // Call your background processing function.
-    await processBulkSendJob(jobId, fastify);
-    
-    return { success: true };
+    try {
+      await processBulkSendJob(jobId, fastify);
+      return { success: true };
+    } catch (err) {
+      fastify.log.error(`Error processing job ${jobId}: ${err}`);
+      throw err;
+    }
   });
 
-  // Decorate Fastify instance with jobQueue.
-  fastify.decorate('jobQueue', queue);
-  fastify.log.info('Bull jobQueue configured');
-  done();
+  fastify.decorate("queue", queue);
+  fastify.log.info("Bull queue configured");
+  
+  fastify.addHook("onClose", async () => {
+    await queue.close();
+  });
 };
 
-export default queuePlugin;
+
+
+export default fp(queuePlugin);
